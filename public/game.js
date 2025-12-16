@@ -1,5 +1,12 @@
 const socket = io();
 
+// --- 1. SETTINGS (TWEAK THESE TO FIX CAMERA) ---
+const MODEL_SCALE = 0.005;      // Scale of the FBX (Make smaller if player is huge)
+const CAMERA_OFFSET_Y = 6;     // How high the camera is (0 is ground, 6 is above head)
+const CAMERA_OFFSET_Z = 10;     // How far back the camera is (behind player)
+const PLAYER_SPEED = 15.0;
+const JUMP_FORCE = 25.0;
+
 // --- Three.js Setup ---
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87CEEB);
@@ -11,7 +18,8 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputEncoding = THREE.sRGBEncoding; 
 document.body.appendChild(renderer.domElement);
 
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.8); // Increased light for FBX
+// Add extra light so the model isn't just a silhouette
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
 scene.add(ambientLight);
 const dirLight = new THREE.DirectionalLight(0xffffff, 1);
 dirLight.position.set(50, 100, 50);
@@ -29,44 +37,46 @@ let loadedModel = null;
 // Physics Variables
 let velocity = new THREE.Vector3();
 let canJump = false;
-const gravity = 40.0; 
-const speed = 15.0;   
-const jumpForce = 20.0;
+const gravity = 50.0; 
 
-// Player Wrapper
+// --- PLAYER CONTAINER (Invisible box that moves) ---
 const playerMesh = new THREE.Group();
 scene.add(playerMesh);
 
-// Camera Holder
+// --- CAMERA RIG ---
+// 1. The Pivot (Rotates up/down)
 const pitchObject = new THREE.Object3D();
-pitchObject.position.y = 2; 
+pitchObject.position.y = CAMERA_OFFSET_Y / 2; // Position pivot near chest/head
 playerMesh.add(pitchObject);
+
+// 2. The Camera (Attached to pivot, moved back)
 pitchObject.add(camera);
-camera.position.set(0, 1, 4); 
+camera.position.set(0, 0, CAMERA_OFFSET_Z); // Move camera BACK
+camera.lookAt(0, 0, 0); // Look at the pivot
 
 // --- FBX LOADER LOGIC ---
-// We use FBXLoader instead of GLTFLoader
 const loader = new THREE.FBXLoader();
 
 loader.load('samurai-vader.fbx', (object) => {
     console.log("FBX Model Loaded!");
     loadedModel = object;
     
-    // --- IMPORTANT: SCALING ---
-    // FBX models are often HUGE (in centimeters). We scale them down.
-    // If your model is too small, change 0.01 to 0.1 or 1.0
-    // If your model is too big, change 0.01 to 0.005
-    loadedModel.scale.set(0.01, 0.01, 0.01); 
+    // Scale the model
+    loadedModel.scale.set(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE);
     
-    // Attach model to OUR player
+    // Attach model to OUR player container
     const myFigure = loadedModel.clone();
-    myFigure.position.y = 0; 
-    // Rotate if model is facing wrong way (FBX usually faces +Z)
+    
+    // Offset Y so feet are on ground (sometimes models float)
+    myFigure.position.y = -1; 
+    
+    // Rotate 180 degrees so back is to camera
     myFigure.rotation.y = Math.PI; 
+    
     playerMesh.add(myFigure);
 
 }, undefined, (error) => {
-    console.error('An error occurred loading the FBX:', error);
+    console.error('Error loading model:', error);
 });
 
 // --- World Builder ---
@@ -127,9 +137,14 @@ document.addEventListener('keyup', (e) => {
 
 document.addEventListener('mousemove', (e) => {
     if (!isLocked) return;
+    // Rotate Body (Left/Right)
     playerMesh.rotation.y -= e.movementX * 0.002;
+    
+    // Rotate Camera (Up/Down)
     pitchObject.rotation.x -= e.movementY * 0.002;
-    pitchObject.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitchObject.rotation.x));
+    
+    // Clamp Up/Down look so you don't break your neck
+    pitchObject.rotation.x = Math.max(-1.0, Math.min(1.0, pitchObject.rotation.x));
 });
 
 document.addEventListener('mousedown', () => { if (isLocked && !isReloading && ammo > 0) shoot(); });
@@ -171,12 +186,13 @@ function checkCollision(position) {
 socket.on('init', (data) => {
     myId = data.id;
     buildWorld(data.map);
+    // Note: We don't spawn ourselves from server list, we spawn local model above
     for (let id in data.players) {
-        if (id !== myId) spawnPlayer(id, data.players[id]);
+        if (id !== myId) spawnOtherPlayer(id, data.players[id]);
     }
 });
 
-socket.on('playerJoined', (d) => spawnPlayer(d.id, d.data));
+socket.on('playerJoined', (d) => spawnOtherPlayer(d.id, d.data));
 socket.on('playerMoved', (d) => {
     if (players[d.id]) {
         players[d.id].position.set(d.data.x, d.data.y, d.data.z);
@@ -185,15 +201,15 @@ socket.on('playerMoved', (d) => {
 });
 socket.on('playerLeft', (id) => { if (players[id]) { scene.remove(players[id]); delete players[id]; } });
 
-function spawnPlayer(id, data) {
+function spawnOtherPlayer(id, data) {
     if (loadedModel) {
         const p = loadedModel.clone();
         p.position.set(data.x, data.y, data.z);
+        p.scale.set(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE); // Ensure scale matches
         p.rotation.y = Math.PI; 
         scene.add(p);
         players[id] = p;
     } else {
-        // Fallback red box
         const geometry = new THREE.BoxGeometry(1, 2, 1);
         const material = new THREE.MeshBasicMaterial( {color: 0xff0000} );
         const cube = new THREE.Mesh( geometry, material );
@@ -220,12 +236,12 @@ function animate() {
         moveDir.normalize();
         moveDir.applyEuler(new THREE.Euler(0, playerMesh.rotation.y, 0));
 
-        velocity.x = moveDir.x * speed;
-        velocity.z = moveDir.z * speed;
+        velocity.x = moveDir.x * PLAYER_SPEED;
+        velocity.z = moveDir.z * PLAYER_SPEED;
         velocity.y -= gravity * delta; 
 
         if (keys.space && canJump) {
-            velocity.y = jumpForce;
+            velocity.y = JUMP_FORCE;
             canJump = false;
         }
 
@@ -236,11 +252,15 @@ function animate() {
         if (checkCollision(playerMesh.position)) playerMesh.position.z -= velocity.z * delta;
 
         playerMesh.position.y += velocity.y * delta;
+        
+        // Ground Check
         if (playerMesh.position.y < 0) {
             playerMesh.position.y = 0;
             velocity.y = 0;
             canJump = true;
         }
+        
+        // Roof/Ceiling Check
         if (checkCollision(playerMesh.position)) {
             if (velocity.y < 0) {
                 playerMesh.position.y -= velocity.y * delta;
