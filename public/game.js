@@ -8,56 +8,66 @@ scene.fog = new THREE.Fog(0x87CEEB, 20, 200);
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputEncoding = THREE.sRGBEncoding; 
 document.body.appendChild(renderer.domElement);
 
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.8); // Increased light for FBX
 scene.add(ambientLight);
-const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+const dirLight = new THREE.DirectionalLight(0xffffff, 1);
 dirLight.position.set(50, 100, 50);
 scene.add(dirLight);
 
 // --- Game State ---
 let myId = null;
 const players = {}; 
-const colliders = []; // Only buildings/trees go here (not players)
+const colliders = []; 
 let ammo = 20;
 let isReloading = false;
 let isLocked = false;
+let loadedModel = null; 
 
 // Physics Variables
 let velocity = new THREE.Vector3();
 let canJump = false;
-const gravity = 25.0; // Gravity strength
-const speed = 15.0;   // Movement speed
-const jumpForce = 15.0;
+const gravity = 40.0; 
+const speed = 15.0;   
+const jumpForce = 20.0;
 
-// Player Wrapper (The invisible box we control)
+// Player Wrapper
 const playerMesh = new THREE.Group();
 scene.add(playerMesh);
 
-// Camera Holder (For looking up/down without rotating body)
+// Camera Holder
 const pitchObject = new THREE.Object3D();
-pitchObject.position.y = 2; // Eye height
+pitchObject.position.y = 2; 
 playerMesh.add(pitchObject);
 pitchObject.add(camera);
-camera.position.set(0, 0, 5); // 3rd Person Offset
+camera.position.set(0, 1, 4); 
 
-// --- Helper: Create Stick Figure ---
-function createStickFigure() {
-    const group = new THREE.Group();
-    const material = new THREE.MeshBasicMaterial({ color: 0x000000 });
-    
-    // Simple Stickman shapes
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 2, 0.5), material);
-    body.position.y = 1;
-    group.add(body);
-    
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.4, 16, 16), material);
-    head.position.y = 2.2;
-    group.add(head);
+// --- FBX LOADER LOGIC ---
+// We use FBXLoader instead of GLTFLoader
+const loader = new THREE.FBXLoader();
 
-    return group;
-}
+loader.load('samurai-vader.fbx', (object) => {
+    console.log("FBX Model Loaded!");
+    loadedModel = object;
+    
+    // --- IMPORTANT: SCALING ---
+    // FBX models are often HUGE (in centimeters). We scale them down.
+    // If your model is too small, change 0.01 to 0.1 or 1.0
+    // If your model is too big, change 0.01 to 0.005
+    loadedModel.scale.set(0.01, 0.01, 0.01); 
+    
+    // Attach model to OUR player
+    const myFigure = loadedModel.clone();
+    myFigure.position.y = 0; 
+    // Rotate if model is facing wrong way (FBX usually faces +Z)
+    myFigure.rotation.y = Math.PI; 
+    playerMesh.add(myFigure);
+
+}, undefined, (error) => {
+    console.error('An error occurred loading the FBX:', error);
+});
 
 // --- World Builder ---
 function buildWorld(mapData) {
@@ -75,8 +85,6 @@ function buildWorld(mapData) {
         mesh.position.set(b.x, b.h / 2, b.z);
         mesh.scale.set(8, b.h, 8);
         scene.add(mesh);
-        
-        // Add to collision list (IMPORTANT)
         mesh.updateMatrixWorld(); 
         colliders.push(mesh);
     });
@@ -86,7 +94,7 @@ function buildWorld(mapData) {
         const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 4), new THREE.MeshStandardMaterial({ color: 0x8B4513 }));
         trunk.position.set(t.x, 2, t.z);
         scene.add(trunk);
-        colliders.push(trunk); // Add tree trunk to collision
+        colliders.push(trunk);
         
         const leaf = new THREE.Mesh(new THREE.ConeGeometry(3, 6, 8), new THREE.MeshStandardMaterial({ color: 0x006400 }));
         leaf.position.set(t.x, 6, t.z);
@@ -119,9 +127,7 @@ document.addEventListener('keyup', (e) => {
 
 document.addEventListener('mousemove', (e) => {
     if (!isLocked) return;
-    // Rotate Body Left/Right
     playerMesh.rotation.y -= e.movementX * 0.002;
-    // Look Up/Down (limit to prevent flipping)
     pitchObject.rotation.x -= e.movementY * 0.002;
     pitchObject.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitchObject.rotation.x));
 });
@@ -152,10 +158,8 @@ function shoot() {
     socket.emit('shoot');
 }
 
-// --- Collision Detection Function ---
 function checkCollision(position) {
-    const playerBox = new THREE.Box3().setFromCenterAndSize(position, new THREE.Vector3(1, 2, 1)); // Player size
-    
+    const playerBox = new THREE.Box3().setFromCenterAndSize(position, new THREE.Vector3(1, 2, 1)); 
     for (let i = 0; i < colliders.length; i++) {
         const wallBox = new THREE.Box3().setFromObject(colliders[i]);
         if (playerBox.intersectsBox(wallBox)) return true;
@@ -167,11 +171,6 @@ function checkCollision(position) {
 socket.on('init', (data) => {
     myId = data.id;
     buildWorld(data.map);
-    // Add visual stick figure for self (optional, mostly we see others)
-    // For 3rd person, we might want to add a stick figure to playerMesh
-    const myFigure = createStickFigure();
-    playerMesh.add(myFigure);
-
     for (let id in data.players) {
         if (id !== myId) spawnPlayer(id, data.players[id]);
     }
@@ -187,10 +186,21 @@ socket.on('playerMoved', (d) => {
 socket.on('playerLeft', (id) => { if (players[id]) { scene.remove(players[id]); delete players[id]; } });
 
 function spawnPlayer(id, data) {
-    const p = createStickFigure();
-    p.position.set(data.x, data.y, data.z);
-    scene.add(p);
-    players[id] = p; // NOT added to 'colliders', so we can walk through them
+    if (loadedModel) {
+        const p = loadedModel.clone();
+        p.position.set(data.x, data.y, data.z);
+        p.rotation.y = Math.PI; 
+        scene.add(p);
+        players[id] = p;
+    } else {
+        // Fallback red box
+        const geometry = new THREE.BoxGeometry(1, 2, 1);
+        const material = new THREE.MeshBasicMaterial( {color: 0xff0000} );
+        const cube = new THREE.Mesh( geometry, material );
+        cube.position.set(data.x, data.y, data.z);
+        scene.add( cube );
+        players[id] = cube;
+    }
 }
 
 // --- Main Loop ---
@@ -202,7 +212,6 @@ function animate() {
     if (isLocked) {
         const delta = clock.getDelta();
 
-        // 1. Calculate X/Z movement
         const moveDir = new THREE.Vector3();
         if (keys.w) moveDir.z -= 1;
         if (keys.s) moveDir.z += 1;
@@ -211,56 +220,38 @@ function animate() {
         moveDir.normalize();
         moveDir.applyEuler(new THREE.Euler(0, playerMesh.rotation.y, 0));
 
-        // 2. Physics & Gravity
         velocity.x = moveDir.x * speed;
         velocity.z = moveDir.z * speed;
         velocity.y -= gravity * delta; 
 
-        // 3. Jump
         if (keys.space && canJump) {
             velocity.y = jumpForce;
             canJump = false;
         }
 
-        // 4. Apply Movement & Check Collisions
-        
-        // -- X Axis --
         playerMesh.position.x += velocity.x * delta;
-        if (checkCollision(playerMesh.position)) {
-            playerMesh.position.x -= velocity.x * delta; // Undo move if hit wall
-        }
+        if (checkCollision(playerMesh.position)) playerMesh.position.x -= velocity.x * delta;
 
-        // -- Z Axis --
         playerMesh.position.z += velocity.z * delta;
-        if (checkCollision(playerMesh.position)) {
-            playerMesh.position.z -= velocity.z * delta; // Undo move if hit wall
-        }
+        if (checkCollision(playerMesh.position)) playerMesh.position.z -= velocity.z * delta;
 
-        // -- Y Axis (Ground/Gravity) --
         playerMesh.position.y += velocity.y * delta;
-        
-        // Ground Floor Check (Simple 0 plane check + collision check)
-        if (playerMesh.position.y < 0) { // Hit floor
+        if (playerMesh.position.y < 0) {
             playerMesh.position.y = 0;
             velocity.y = 0;
             canJump = true;
         }
-        
-        // Check if we landed on a building roof
         if (checkCollision(playerMesh.position)) {
-             // If we are falling and hit something, we landed on it
             if (velocity.y < 0) {
-                playerMesh.position.y -= velocity.y * delta; // Undo
+                playerMesh.position.y -= velocity.y * delta;
                 velocity.y = 0;
                 canJump = true;
             } else {
-                // We jumped up into something
                 playerMesh.position.y -= velocity.y * delta;
                 velocity.y = 0;
             }
         }
 
-        // Send Data
         socket.emit('move', {
             x: playerMesh.position.x,
             y: playerMesh.position.y,
