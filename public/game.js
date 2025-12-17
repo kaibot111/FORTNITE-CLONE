@@ -1,10 +1,10 @@
 const socket = io();
 
-// --- GUI SETTINGS OBJECT ---
+// --- GUI SETTINGS ---
 const params = {
-    scale: 0.005,       // Model Scale
-    camOffsetY: 0,      // Vertical Camera height (Auto-calculated, but tweakable)
-    camOffsetZ: 10,     // Distance behind player
+    scale: 0.005,       // Controls size of the model
+    camOffsetY: 4.0,    // Controls height of the camera (Manual)
+    camOffsetZ: 8.0,    // Controls distance behind player
     speed: 15.0,
     jumpForce: 25.0,
     gravity: 50.0
@@ -13,11 +13,14 @@ const params = {
 // --- GUI SETUP ---
 const gui = new dat.GUI();
 const f1 = gui.addFolder('Player Settings');
-// When scale changes, we must resize the model AND re-calculate head position
-f1.add(params, 'scale', 0.001, 0.1).step(0.001).name('Model Scale').onChange(updatePlayerTransform);
-// We save the controller to a variable so we can update it automatically later
-const camYCtrl = f1.add(params, 'camOffsetY', 0, 20).name('Camera Height').onChange(updateCameraPosition);
-f1.add(params, 'camOffsetZ', 2, 30).name('Camera Dist').onChange(updateCameraPosition);
+
+// 1. Model Scale: Only changes the size of the 3D model
+f1.add(params, 'scale', 0.0001, 0.02).step(0.0001).name('Model Size').onChange(updateModelScale);
+
+// 2. Camera Controls: Manual adjustment
+f1.add(params, 'camOffsetY', 0, 20).name('Camera Height').onChange(updateCameraRig);
+f1.add(params, 'camOffsetZ', 2, 30).name('Camera Dist').onChange(updateCameraRig);
+
 f1.add(params, 'speed', 5, 50).name('Run Speed');
 f1.add(params, 'jumpForce', 10, 100).name('Jump Force');
 f1.open();
@@ -47,7 +50,7 @@ let ammo = 20;
 let isReloading = false;
 let isLocked = false;
 let loadedModel = null; 
-let myPlayerModel = null; // Reference to our specific mesh
+let myPlayerModel = null; 
 
 let velocity = new THREE.Vector3();
 let canJump = false;
@@ -61,37 +64,26 @@ const pitchObject = new THREE.Object3D();
 playerMesh.add(pitchObject);
 pitchObject.add(camera);
 
-// --- HELPER FUNCTIONS FOR AUTO-HEAD ---
+// Initialize Camera Position
+updateCameraRig();
 
-function updateCameraPosition() {
-    // 1. Set pivot height (Head level)
-    pitchObject.position.y = params.camOffsetY;
-    // 2. Set camera distance (Back)
-    camera.position.set(0, 0, params.camOffsetZ);
-    camera.lookAt(0, 0, 0); 
+// --- UPDATE FUNCTIONS ---
+
+function updateModelScale() {
+    if (myPlayerModel) {
+        // Directly set the scale of the mesh
+        myPlayerModel.scale.set(params.scale, params.scale, params.scale);
+    }
 }
 
-function updatePlayerTransform() {
-    if (!myPlayerModel) return;
-
-    // 1. Apply Scale
-    myPlayerModel.scale.set(params.scale, params.scale, params.scale);
+function updateCameraRig() {
+    // 1. Move the pivot up/down (Neck height)
+    pitchObject.position.y = params.camOffsetY;
     
-    // 2. Auto-Calculate Head Height
-    // We create a bounding box around the model to see how tall it is now
-    const box = new THREE.Box3().setFromObject(myPlayerModel);
-    const size = new THREE.Vector3();
-    box.getSize(size);
-
-    // 3. Set Camera to 90% of height (Approximate Head/Eyes)
-    // We update the 'params' object so the GUI slider moves too
-    params.camOffsetY = size.y * 0.9;
-    
-    // Update the GUI display to match the new auto value
-    camYCtrl.setValue(params.camOffsetY);
-
-    // Apply the change
-    updateCameraPosition();
+    // 2. Move the camera back (Distance)
+    // We do NOT use lookAt(0,0,0) here because it breaks rotation.
+    // The camera naturally looks forward (-Z).
+    camera.position.set(0, 0, params.camOffsetZ);
 }
 
 // --- FBX LOADER ---
@@ -102,15 +94,15 @@ loader.load('samurai-vader.fbx', (object) => {
     loadedModel = object;
     
     const myFigure = loadedModel.clone();
-    myFigure.position.y = -1; // Slight offset for feet
-    myFigure.rotation.y = Math.PI; 
+    myFigure.position.y = -1; // Feet adjustment
+    myFigure.rotation.y = Math.PI; // Face forward
     
+    // Set initial scale from params
+    myFigure.scale.set(params.scale, params.scale, params.scale);
+
     // Save reference and add to group
     myPlayerModel = myFigure;
     playerMesh.add(myFigure);
-
-    // Run the Auto-Connect Logic immediately
-    updatePlayerTransform();
 
 }, undefined, (error) => {
     console.error('Error loading model:', error);
@@ -222,7 +214,7 @@ socket.on('playerMoved', (d) => {
     if (players[d.id]) {
         players[d.id].position.set(d.data.x, d.data.y, d.data.z);
         players[d.id].rotation.y = d.data.rotation;
-        // Also update scale of others if we want (optional)
+        // Sync scale for others if they are models
         if(players[d.id].isModel) players[d.id].scale.set(params.scale, params.scale, params.scale);
     }
 });
@@ -232,9 +224,9 @@ function spawnOtherPlayer(id, data) {
     if (loadedModel) {
         const p = loadedModel.clone();
         p.position.set(data.x, data.y, data.z);
-        p.scale.set(params.scale, params.scale, params.scale); // Use current GUI scale
+        p.scale.set(params.scale, params.scale, params.scale);
         p.rotation.y = Math.PI; 
-        p.isModel = true; // Flag so we know it's a model
+        p.isModel = true;
         scene.add(p);
         players[id] = p;
     } else {
@@ -264,7 +256,6 @@ function animate() {
         moveDir.normalize();
         moveDir.applyEuler(new THREE.Euler(0, playerMesh.rotation.y, 0));
 
-        // Use PARAMS here (from the GUI)
         velocity.x = moveDir.x * params.speed;
         velocity.z = moveDir.z * params.speed;
         velocity.y -= params.gravity * delta; 
