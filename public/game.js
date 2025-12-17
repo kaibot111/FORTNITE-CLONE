@@ -1,11 +1,26 @@
 const socket = io();
 
-// --- 1. SETTINGS (TWEAK THESE TO FIX CAMERA) ---
-const MODEL_SCALE = 0.0000000001;      // Scale of the FBX (Make smaller if player is huge)
-const CAMERA_OFFSET_Y = 5;     // How high the camera is (0 is ground, 6 is above head)
-const CAMERA_OFFSET_Z = 0;     // How far back the camera is (behind player)
-const PLAYER_SPEED = 15.0;
-const JUMP_FORCE = 25.0;
+// --- GUI SETTINGS OBJECT ---
+const params = {
+    scale: 0.005,       // Model Scale
+    camOffsetY: 0,      // Vertical Camera height (Auto-calculated, but tweakable)
+    camOffsetZ: 10,     // Distance behind player
+    speed: 15.0,
+    jumpForce: 25.0,
+    gravity: 50.0
+};
+
+// --- GUI SETUP ---
+const gui = new dat.GUI();
+const f1 = gui.addFolder('Player Settings');
+// When scale changes, we must resize the model AND re-calculate head position
+f1.add(params, 'scale', 0.001, 0.1).step(0.001).name('Model Scale').onChange(updatePlayerTransform);
+// We save the controller to a variable so we can update it automatically later
+const camYCtrl = f1.add(params, 'camOffsetY', 0, 20).name('Camera Height').onChange(updateCameraPosition);
+f1.add(params, 'camOffsetZ', 2, 30).name('Camera Dist').onChange(updateCameraPosition);
+f1.add(params, 'speed', 5, 50).name('Run Speed');
+f1.add(params, 'jumpForce', 10, 100).name('Jump Force');
+f1.open();
 
 // --- Three.js Setup ---
 const scene = new THREE.Scene();
@@ -18,7 +33,6 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputEncoding = THREE.sRGBEncoding; 
 document.body.appendChild(renderer.domElement);
 
-// Add extra light so the model isn't just a silhouette
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
 scene.add(ambientLight);
 const dirLight = new THREE.DirectionalLight(0xffffff, 1);
@@ -33,47 +47,70 @@ let ammo = 20;
 let isReloading = false;
 let isLocked = false;
 let loadedModel = null; 
+let myPlayerModel = null; // Reference to our specific mesh
 
-// Physics Variables
 let velocity = new THREE.Vector3();
 let canJump = false;
-const gravity = 50.0; 
 
-// --- PLAYER CONTAINER (Invisible box that moves) ---
+// --- PLAYER CONTAINER ---
 const playerMesh = new THREE.Group();
 scene.add(playerMesh);
 
 // --- CAMERA RIG ---
-// 1. The Pivot (Rotates up/down)
 const pitchObject = new THREE.Object3D();
-pitchObject.position.y = CAMERA_OFFSET_Y / 2; // Position pivot near chest/head
 playerMesh.add(pitchObject);
-
-// 2. The Camera (Attached to pivot, moved back)
 pitchObject.add(camera);
-camera.position.set(0, 0, CAMERA_OFFSET_Z); // Move camera BACK
-camera.lookAt(0, 0, 0); // Look at the pivot
 
-// --- FBX LOADER LOGIC ---
+// --- HELPER FUNCTIONS FOR AUTO-HEAD ---
+
+function updateCameraPosition() {
+    // 1. Set pivot height (Head level)
+    pitchObject.position.y = params.camOffsetY;
+    // 2. Set camera distance (Back)
+    camera.position.set(0, 0, params.camOffsetZ);
+    camera.lookAt(0, 0, 0); 
+}
+
+function updatePlayerTransform() {
+    if (!myPlayerModel) return;
+
+    // 1. Apply Scale
+    myPlayerModel.scale.set(params.scale, params.scale, params.scale);
+    
+    // 2. Auto-Calculate Head Height
+    // We create a bounding box around the model to see how tall it is now
+    const box = new THREE.Box3().setFromObject(myPlayerModel);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+
+    // 3. Set Camera to 90% of height (Approximate Head/Eyes)
+    // We update the 'params' object so the GUI slider moves too
+    params.camOffsetY = size.y * 0.9;
+    
+    // Update the GUI display to match the new auto value
+    camYCtrl.setValue(params.camOffsetY);
+
+    // Apply the change
+    updateCameraPosition();
+}
+
+// --- FBX LOADER ---
 const loader = new THREE.FBXLoader();
 
 loader.load('samurai-vader.fbx', (object) => {
     console.log("FBX Model Loaded!");
     loadedModel = object;
     
-    // Scale the model
-    loadedModel.scale.set(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE);
-    
-    // Attach model to OUR player container
     const myFigure = loadedModel.clone();
-    
-    // Offset Y so feet are on ground (sometimes models float)
-    myFigure.position.y = -1; 
-    
-    // Rotate 180 degrees so back is to camera
+    myFigure.position.y = -1; // Slight offset for feet
     myFigure.rotation.y = Math.PI; 
     
+    // Save reference and add to group
+    myPlayerModel = myFigure;
     playerMesh.add(myFigure);
+
+    // Run the Auto-Connect Logic immediately
+    updatePlayerTransform();
 
 }, undefined, (error) => {
     console.error('Error loading model:', error);
@@ -82,13 +119,10 @@ loader.load('samurai-vader.fbx', (object) => {
 // --- World Builder ---
 function buildWorld(mapData) {
     const geo = new THREE.BoxGeometry(1, 1, 1);
-    
-    // Ground
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), new THREE.MeshStandardMaterial({ color: 0x228B22 }));
     ground.rotation.x = -Math.PI / 2;
     scene.add(ground);
 
-    // Buildings
     mapData.buildings.forEach(b => {
         const mat = new THREE.MeshStandardMaterial({ color: b.type === 'barn' ? 0x8B4513 : 0x808080 });
         const mesh = new THREE.Mesh(geo, mat);
@@ -99,13 +133,11 @@ function buildWorld(mapData) {
         colliders.push(mesh);
     });
 
-    // Trees
     mapData.trees.forEach(t => {
         const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 4), new THREE.MeshStandardMaterial({ color: 0x8B4513 }));
         trunk.position.set(t.x, 2, t.z);
         scene.add(trunk);
         colliders.push(trunk);
-        
         const leaf = new THREE.Mesh(new THREE.ConeGeometry(3, 6, 8), new THREE.MeshStandardMaterial({ color: 0x006400 }));
         leaf.position.set(t.x, 6, t.z);
         scene.add(leaf);
@@ -114,7 +146,6 @@ function buildWorld(mapData) {
 
 // --- Inputs ---
 const keys = { w: false, a: false, s: false, d: false, space: false };
-
 document.addEventListener('keydown', (e) => {
     switch(e.code) {
         case 'KeyW': keys.w = true; break;
@@ -137,13 +168,8 @@ document.addEventListener('keyup', (e) => {
 
 document.addEventListener('mousemove', (e) => {
     if (!isLocked) return;
-    // Rotate Body (Left/Right)
     playerMesh.rotation.y -= e.movementX * 0.002;
-    
-    // Rotate Camera (Up/Down)
     pitchObject.rotation.x -= e.movementY * 0.002;
-    
-    // Clamp Up/Down look so you don't break your neck
     pitchObject.rotation.x = Math.max(-1.0, Math.min(1.0, pitchObject.rotation.x));
 });
 
@@ -186,7 +212,6 @@ function checkCollision(position) {
 socket.on('init', (data) => {
     myId = data.id;
     buildWorld(data.map);
-    // Note: We don't spawn ourselves from server list, we spawn local model above
     for (let id in data.players) {
         if (id !== myId) spawnOtherPlayer(id, data.players[id]);
     }
@@ -197,6 +222,8 @@ socket.on('playerMoved', (d) => {
     if (players[d.id]) {
         players[d.id].position.set(d.data.x, d.data.y, d.data.z);
         players[d.id].rotation.y = d.data.rotation;
+        // Also update scale of others if we want (optional)
+        if(players[d.id].isModel) players[d.id].scale.set(params.scale, params.scale, params.scale);
     }
 });
 socket.on('playerLeft', (id) => { if (players[id]) { scene.remove(players[id]); delete players[id]; } });
@@ -205,8 +232,9 @@ function spawnOtherPlayer(id, data) {
     if (loadedModel) {
         const p = loadedModel.clone();
         p.position.set(data.x, data.y, data.z);
-        p.scale.set(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE); // Ensure scale matches
+        p.scale.set(params.scale, params.scale, params.scale); // Use current GUI scale
         p.rotation.y = Math.PI; 
+        p.isModel = true; // Flag so we know it's a model
         scene.add(p);
         players[id] = p;
     } else {
@@ -236,12 +264,13 @@ function animate() {
         moveDir.normalize();
         moveDir.applyEuler(new THREE.Euler(0, playerMesh.rotation.y, 0));
 
-        velocity.x = moveDir.x * PLAYER_SPEED;
-        velocity.z = moveDir.z * PLAYER_SPEED;
-        velocity.y -= gravity * delta; 
+        // Use PARAMS here (from the GUI)
+        velocity.x = moveDir.x * params.speed;
+        velocity.z = moveDir.z * params.speed;
+        velocity.y -= params.gravity * delta; 
 
         if (keys.space && canJump) {
-            velocity.y = JUMP_FORCE;
+            velocity.y = params.jumpForce;
             canJump = false;
         }
 
@@ -253,14 +282,12 @@ function animate() {
 
         playerMesh.position.y += velocity.y * delta;
         
-        // Ground Check
         if (playerMesh.position.y < 0) {
             playerMesh.position.y = 0;
             velocity.y = 0;
             canJump = true;
         }
         
-        // Roof/Ceiling Check
         if (checkCollision(playerMesh.position)) {
             if (velocity.y < 0) {
                 playerMesh.position.y -= velocity.y * delta;
