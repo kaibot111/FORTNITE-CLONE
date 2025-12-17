@@ -2,9 +2,9 @@ const socket = io();
 
 // --- GUI SETTINGS ---
 const params = {
-    scale: 0.005,       // Controls size of the model
-    camOffsetY: 4.0,    // Controls height of the camera (Manual)
-    camOffsetZ: 8.0,    // Controls distance behind player
+    scale: 0.00002,     // UPDATED: 300x smaller default
+    camOffsetY: 4.0,    
+    camOffsetZ: 8.0,    
     speed: 15.0,
     jumpForce: 25.0,
     gravity: 50.0
@@ -14,10 +14,11 @@ const params = {
 const gui = new dat.GUI();
 const f1 = gui.addFolder('Player Settings');
 
-// 1. Model Scale: Only changes the size of the 3D model
-f1.add(params, 'scale', 0.0001, 0.02).step(0.0001).name('Model Size').onChange(updateModelScale);
+// 1. Model Scale: Updated range for tiny models
+// Range is now 0.00001 to 0.001
+f1.add(params, 'scale', 0.00001, 0.001).step(0.00001).name('Model Size').onChange(updateModelScale);
 
-// 2. Camera Controls: Manual adjustment
+// 2. Camera Controls
 f1.add(params, 'camOffsetY', 0, 20).name('Camera Height').onChange(updateCameraRig);
 f1.add(params, 'camOffsetZ', 2, 30).name('Camera Dist').onChange(updateCameraRig);
 
@@ -71,18 +72,12 @@ updateCameraRig();
 
 function updateModelScale() {
     if (myPlayerModel) {
-        // Directly set the scale of the mesh
         myPlayerModel.scale.set(params.scale, params.scale, params.scale);
     }
 }
 
 function updateCameraRig() {
-    // 1. Move the pivot up/down (Neck height)
     pitchObject.position.y = params.camOffsetY;
-    
-    // 2. Move the camera back (Distance)
-    // We do NOT use lookAt(0,0,0) here because it breaks rotation.
-    // The camera naturally looks forward (-Z).
     camera.position.set(0, 0, params.camOffsetZ);
 }
 
@@ -94,13 +89,12 @@ loader.load('samurai-vader.fbx', (object) => {
     loadedModel = object;
     
     const myFigure = loadedModel.clone();
-    myFigure.position.y = -1; // Feet adjustment
-    myFigure.rotation.y = Math.PI; // Face forward
+    myFigure.position.y = -1; 
+    myFigure.rotation.y = Math.PI; 
     
     // Set initial scale from params
     myFigure.scale.set(params.scale, params.scale, params.scale);
 
-    // Save reference and add to group
     myPlayerModel = myFigure;
     playerMesh.add(myFigure);
 
@@ -214,7 +208,6 @@ socket.on('playerMoved', (d) => {
     if (players[d.id]) {
         players[d.id].position.set(d.data.x, d.data.y, d.data.z);
         players[d.id].rotation.y = d.data.rotation;
-        // Sync scale for others if they are models
         if(players[d.id].isModel) players[d.id].scale.set(params.scale, params.scale, params.scale);
     }
 });
