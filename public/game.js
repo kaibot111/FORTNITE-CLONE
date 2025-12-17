@@ -1,9 +1,9 @@
 const socket = io();
 
 // --- 1. SETTINGS (TWEAK THESE TO FIX CAMERA) ---
-const MODEL_SCALE = 0.005;      // Scale of the FBX (Make smaller if player is huge)
-const CAMERA_OFFSET_Y = 6;     // How high the camera is (0 is ground, 6 is above head)
-const CAMERA_OFFSET_Z = 10;     // How far back the camera is (behind player)
+const MODEL_SCALE = 0.0000000001;      // Scale of the FBX (Make smaller if player is huge)
+const CAMERA_OFFSET_Y = 5;     // How high the camera is (0 is ground, 6 is above head)
+const CAMERA_OFFSET_Z = 0;     // How far back the camera is (behind player)
 const PLAYER_SPEED = 15.0;
 const JUMP_FORCE = 25.0;
 
